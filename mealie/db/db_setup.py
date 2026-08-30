@@ -32,10 +32,29 @@ def set_sqlite_pragma_journal_wal(dbapi_connection, connection_record):
 
 def sql_global_init(db_url: str):
     connect_args = {}
+    pool_kwargs = {}
     if "sqlite" in db_url:
         connect_args["check_same_thread"] = False
+    else:
+        # SQLAlchemy's defaults (pool_size=5, max_overflow=10) let a single
+        # instance open up to 15 connections on its own -- enough to exhaust
+        # a shared Postgres connection-pooler's entire budget by itself under
+        # a burst of concurrent requests (e.g. a client reordering many
+        # shopping-list items fires one update per item). Capped low and
+        # configurable via env vars so an instance can never again be the
+        # sole cause of exhausting a shared pooler; raise these only if
+        # deployed against a pooler/database with real headroom to spare.
+        import os
 
-    engine = sa.create_engine(db_url, echo=False, connect_args=connect_args, pool_pre_ping=True, future=True)
+        pool_kwargs = {
+            "pool_size": int(os.environ.get("MEALIE_DB_POOL_SIZE", "3")),
+            "max_overflow": int(os.environ.get("MEALIE_DB_MAX_OVERFLOW", "2")),
+            "pool_timeout": int(os.environ.get("MEALIE_DB_POOL_TIMEOUT", "10")),
+        }
+
+    engine = sa.create_engine(
+        db_url, echo=False, connect_args=connect_args, pool_pre_ping=True, future=True, **pool_kwargs
+    )
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 
